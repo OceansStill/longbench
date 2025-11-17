@@ -1,0 +1,17 @@
+\begin{table}
+\caption{Evalution results on LongBench. All models have roughly $760$M non-embedding parameters and are trained on roughly $48$B tokens on LongCrawl64. Bold and underlined numbers indicate the best and the second-best results, respectively.}
+\label{tab:long-bench}
+\begin{center}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lrrrrrrrrrrrrrr}
+\toprule
+\multirow{5}{*}{Model} & \multicolumn{3}{c}{Single-Document QA} & \multicolumn{3}{c}{Multi-Document QA}& \multicolumn{3}{c}{Summarization}& \multicolumn{3}{c}{Few-shot Learning}& \multicolumn{2}{c}{Code} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(lr){11-13}\cmidrule(lr){14-15}
+ & \rotatebox[origin=c]{45}{NarrativeQA} & \rotatebox[origin=c]{45}{Qasper} & \rotatebox[origin=c]{45}{MFQA} & \rotatebox[origin=c]{45}{HotpotQA} & \rotatebox[origin=c]{45}{2WikiMQA} & \rotatebox[origin=c]{45}{Musique} & \rotatebox[origin=c]{45}{GovReport} & \rotatebox[origin=c]{45}{QMSum} & \rotatebox[origin=c]{45}{MultiNews} & \rotatebox[origin=c]{45}{TREC} & \rotatebox[origin=c]{45}{TriviaQA} & \rotatebox[origin=c]{45}{SamSum} & \rotatebox[origin=c]{45}{LCC} & \rotatebox[origin=c]{45}{RepoBench-P} \\
+\midrule
+Gated Delta Net 1.3B & \textbf{2.03} & \textbf{1.92} & \textbf{3.81} & \textbf{0.21} & \textbf{0.1} & \textbf{0.22} & \textbf{3.09} & \textbf{9.1} & \textbf{4.78} & \textbf{0.0} & \textbf{1.96} & \textbf{6.25} & \textbf{15.07} & \textbf{16.61} \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+\end{table}
