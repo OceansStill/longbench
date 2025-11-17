@@ -15,9 +15,12 @@ import argparse
 # from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 import torch.distributed as dist
 import torch.multiprocessing as mp
-
-import forgetting_transformer.model.register_all
-import forgetting_transformer.tokenizer
+#import fla  # noqa - 导入 FLA 库以注册模型类
+#import forgetting_transformer.model
+#import forgetting_transformer.tokenizer
+sys.path.append("/home/liyijia/LinearAttaetion/edge/cartesia-pytorch")  # 确保 cartesia-pytorch 路径在搜索路径中
+from cartesia_pytorch.Llamba.llamba import LlambaLMHeadModel
+from cartesia_pytorch.Llamba.configuration_llamba import LlambaConfig
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
@@ -61,54 +64,62 @@ def post_process(response, model_name):
 
 def get_pred(rank, world_size, data, max_length, max_gen, prompt_format, dataset, device, model_name, model_path, out_path, lock):
     device = torch.device(f'cuda:{rank}')
-    # model_path = model2path[model_name]
     model, tokenizer = load_model_and_tokenizer(model_path, model_name, device)
+    
     for json_obj in tqdm(data):
         prompt = prompt_format.format(**json_obj)
-        # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
+        # 截断以适应 max_length
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
-        # if "chatglm3" in model_name:
-            # tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
+        
         if len(tokenized_prompt) > max_length:
             half = int(max_length/2)
-            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
-        # if dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]: # chat models are better off without build prompts on these tasks
-            # prompt = build_chat(tokenizer, prompt, model_name)
-        if "chatglm3" in model_name:
-            if dataset in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]:
-                input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
-            else:
-                input = prompt.to(device)
-        else:
-            input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
-        context_length = input.input_ids.shape[-1]
-        # if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
-        #     with torch.cuda.device(device):
-        #         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        #             output = model.generate(
-        #                 **input,
-        #                 max_new_tokens=max_gen,
-        #                 num_beams=1,
-        #                 do_sample=False,
-        #                 temperature=1.0,
-        #                 min_length=context_length+1,
-        #                 eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
-        #             )[0]
-        # else:
+            prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True) + tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
+        
+        # 标准输入处理
+        input_data = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
+        context_length = input_data.input_ids.shape[-1]
+        
+        # 为 Llamba 模型单独处理
         with torch.cuda.device(device):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                output = model.generate(
-                    **input,
-                    max_new_tokens=max_gen,
-                    num_beams=1,
-                    do_sample=False,
-                    temperature=1.0,
-                )[0]
+                if "llamba" in model_name.lower():
+                    # 明确提供 max_length 和 input_ids
+                    input_ids = input_data.input_ids
+                    
+                    # 确保输入长度不超过限制
+                    max_input_length = 5000  # 更保守的限制
+                    if input_ids.shape[1] > max_input_length:
+                        input_ids = input_ids[:, -max_input_length:]
+                        context_length = input_ids.shape[1]
+                        print(f"Input truncated to {max_input_length} tokens")
+                    
+                    # 确保总长度合理
+                    target_length = context_length + max_gen
+                    
+                    # 使用与 LlambaLMWrapper._model_generate 相似的参数
+                    output = model.generate(
+                        input_ids=input_ids,
+                        max_length=target_length,  # 必须明确提供
+                       # num_beams=1,
+                     #   do_sample=False,
+                        temperature=1.0,
+                    )[0]
+                else:
+                    # 其他模型的默认处理方式
+                    output = model.generate(
+                        **input_data,
+                        max_new_tokens=max_gen,
+                        num_beams=1,
+                        do_sample=False,
+                        temperature=1.0,
+                    )[0]
+        
+        # 处理输出
         pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
         pred = post_process(pred, model_name)
+        
+        # 保存预测结果
         with lock:
-            # Note file closing is also done within the lock. So there won't be
-            # any issue.
             with open(out_path, "a", encoding="utf-8") as f:
                 try:
                     pred.encode("utf-8")
@@ -131,30 +142,32 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
 
 def load_model_and_tokenizer(path, model_name, device):
-    # if "chatglm" in model_name or "internlm" in model_name or "xgen" in model_name:
-    #     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-    #     model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True, torch_dtype=torch.bfloat16).to(device)
-    # elif "llama2" in model_name:
-    #     replace_llama_attn_with_flash_attn()
-    #     tokenizer = LlamaTokenizer.from_pretrained(path)
-    #     model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16).to(device)
-    # elif "longchat" in model_name or "vicuna" in model_name:
-    #     from fastchat.model import load_model
-    #     replace_llama_attn_with_flash_attn()
-    #     model, _ = load_model(
-    #         path,
-    #         device='cpu',
-    #         num_gpus=0,
-    #         load_8bit=False,
-    #         cpu_offloading=False,
-    #         debug=False,
-    #     )
-    #     model = model.to(device)
-    #     model = model.bfloat16()
-    #     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, use_fast=False)
-    tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, add_bos_token=True, clean_up_tokenization_spaces=False)
-    model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True).to(device)
-    model = model.eval()
+    if "llamba" in model_name.lower():
+        # 直接使用 Llamba 的自定义加载方式
+        from cartesia_pytorch.Llamba.llamba import LlambaLMHeadModel
+        from cartesia_pytorch.Llamba.configuration_llamba import LlambaConfig
+        from transformers import LlamaTokenizer  # Llamba 通常使用 Llama 的分词器
+        
+        # 加载分词器 (使用与 Llamba 兼容的分词器)
+        tokenizer = AutoTokenizer.from_pretrained(
+            "meta-llama/Llama-3.2-1B",  # 或者从你的模型路径加载
+            add_bos_token=True,
+            clean_up_tokenization_spaces=False
+        )
+        
+        # 加载模型
+        model = LlambaLMHeadModel.from_pretrained(
+            path,
+            device=device,
+            dtype=torch.bfloat16
+        )
+        model = model.eval()
+    else:
+        # 其他模型的默认加载方式
+        tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, add_bos_token=True, clean_up_tokenization_spaces=False)
+        model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True).to(device)
+        model = model.eval()
+    
     return model, tokenizer
 
 if __name__ == '__main__':
@@ -178,8 +191,7 @@ if __name__ == '__main__':
     if args.e:
         # datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
             # "trec", "triviaqa", "samsum", "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-        datasets = ["qasper", "multifieldqa_en", "hotpotqa", "2wikimqa", "gov_report", "multi_news", \
-            "trec", "triviaqa", "samsum", "lcc", "repobench-p"]
+        datasets = ["musique","hotpotqa", "trec", "2wikimqa"]
         # datasets = ["triviaqa"]
     else:
         # datasets = ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", \
@@ -189,9 +201,7 @@ if __name__ == '__main__':
         # datasets = ["2wikimqa", "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "musique", \
                     # "gov_report", "qmsum", "multi_news", "trec", "triviaqa", "samsum", \
                     # "passage_count", "passage_retrieval_en", "lcc", "repobench-p"]
-        datasets = ["2wikimqa", "narrativeqa", "qasper", "multifieldqa_en", "hotpotqa", "musique", \
-                    "gov_report", "qmsum", "multi_news", "trec", "triviaqa", "samsum", \
-                    "lcc", "repobench-p"]
+        datasets = ["hotpotqa", "musique""trec", "2wikimqa"]
         # datasets = ["2wikimqa"]
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
